@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
-from dotenv import load_dotenv
+from google.colab import userdata
 
 # Carregar variáveis do .env
 load_dotenv()
@@ -248,3 +248,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
