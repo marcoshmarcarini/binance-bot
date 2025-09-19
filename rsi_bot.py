@@ -14,14 +14,14 @@ API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 USE_TESTNET = os.getenv("USE_TESTNET", "false").lower() == "true"
 
-SYMBOL = os.getenv("SYMBOL", "ADAUSDT")
-QUANTITY = float(os.getenv("QUANTITY", "10"))
+SYMBOL = os.getenv("SYMBOL", "DOGEUSDT")
+QUANTITY = float(os.getenv("QUANTITY", "15"))
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
 RSI_LOW = int(os.getenv("RSI_LOW", "30"))
 RSI_HIGH = int(os.getenv("RSI_HIGH", "70"))
 INTERVAL = os.getenv("INTERVAL", "1m")
 LOOP_SLEEP_SEC = int(os.getenv("LOOP_SLEEP_SEC", "15"))
-MAX_NOTIONAL = float(os.getenv("MAX_NOTIONAL_USDT", "15"))
+MAX_NOTIONAL = float(os.getenv("MAX_NOTIONAL_USDT", "10"))
 
 # Inicializar cliente
 if USE_TESTNET:
@@ -58,7 +58,7 @@ def get_klines(symbol, interval, lookback=100):
     for attempt in range(3):
         try:
             klines = client.get_klines(symbol=symbol, interval=interval, limit=lookback)
-            closes = [float(k[4]) for k in klines]  # preço de fechamento
+            closes = [float(k[4]) for k in klines]
             return closes
         except Exception as e:
             print(f"⚠️ Tentativa {attempt+1}/3 - Erro ao obter klines: {e}")
@@ -74,7 +74,6 @@ def calculate_rsi(prices, period=14):
     gains = deltas.clip(min=0)
     losses = -deltas.clip(max=0)
     
-    # Calcula médias simples
     avg_gain = np.mean(gains[-period:])
     avg_loss = np.mean(losses[-period:])
     
@@ -100,7 +99,6 @@ def get_balance(asset, retries=3):
 def place_order(side, quantity, symbol):
     """Executa ordem com tratamento robusto de erros"""
     try:
-        # Verifica se a quantidade é válida
         if quantity <= 0:
             print(f"❌ Quantidade inválida: {quantity}")
             return None
@@ -113,11 +111,8 @@ def place_order(side, quantity, symbol):
         )
         print(f"✅ Ordem {side} de {quantity} {symbol} executada!")
         return order
-    except BinanceAPIException as e:
-        print(f"❌ Erro na ordem {side}: {e}")
-        return None
     except Exception as e:
-        print(f"❌ Erro geral na ordem: {e}")
+        print(f"❌ Erro na ordem {side}: {e}")
         return None
 
 def get_symbol_info(symbol):
@@ -140,7 +135,6 @@ def adjust_quantity(quantity, symbol_info):
             max_qty = float(filtro['maxQty'])
             step_size = float(filtro['stepSize'])
             
-            # Arredonda para o step size
             adjusted_qty = np.floor(quantity / step_size) * step_size
             adjusted_qty = max(min_qty, min(adjusted_qty, max_qty))
             adjusted_qty = round(adjusted_qty, 8)
@@ -148,6 +142,30 @@ def adjust_quantity(quantity, symbol_info):
             return adjusted_qty
             
     return quantity
+
+def get_average_entry_price(symbol):
+    """Obtém o preço médio de entrada automaticamente"""
+    try:
+        trades = client.get_my_trades(symbol=symbol, limit=10)
+        buy_trades = [t for t in trades if t['isBuyer']]
+        
+        if not buy_trades:
+            return None
+            
+        total_cost = 0
+        total_qty = 0
+        
+        for trade in buy_trades:
+            price = float(trade['price'])
+            qty = float(trade['qty'])
+            total_cost += price * qty
+            total_qty += qty
+            
+        return total_cost / total_qty if total_qty > 0 else None
+        
+    except Exception as e:
+        print(f"❌ Erro ao calcular preço médio: {e}")
+        return None
 
 # ================== LÓGICA PRINCIPAL ==================
 
@@ -177,8 +195,14 @@ def main():
     # Se já tem o ativo, considera em posição
     if asset_balance >= adjusted_quantity * 0.8:
         in_position = True
-        print(f"🎯 Posição existente detectada: {asset_balance} {base_asset}")
-        entry_price = float(input("💡 Digite o preço médio de entrada: "))
+        # 🔽 PREÇO MÉDIO AUTOMÁTICO - CORRIGIDO
+        entry_price = get_average_entry_price(SYMBOL)
+        
+        if not entry_price:
+            # Pede input apenas se não conseguir calcular automaticamente
+            entry_price = float(input(f"💡 Digite o preço médio de entrada para {base_asset}: "))
+        
+        print(f"🎯 Posição detectada: {asset_balance} {base_asset} @ ${entry_price:.6f}")
     
     while True:
         try:
@@ -219,7 +243,6 @@ def main():
                         in_position = True
                         trade_count += 1
                         print(f"✅ COMPRA REALIZADA! Entrada: ${entry_price:.6f}")
-                        # Aguarda atualização de saldo
                         time.sleep(3)
                 else:
                     if not notional_ok:
@@ -227,20 +250,23 @@ def main():
                     if not balance_ok:
                         print(f"⚠️ Saldo insuficiente: ${usdt_balance:.2f} < ${cost:.2f}")
             
-            # LÓGICA DE VENDA
+            # LÓGICA DE VENDA - CORRIGIDA
             elif in_position and rsi > RSI_HIGH:
-                if asset_balance >= adjusted_quantity * 0.8:
-                    print(f"📈 RSI ALTO ({rsi:.2f})! Vendendo {adjusted_quantity} {base_asset}...")
-                    order = place_order("SELL", adjusted_quantity, SYMBOL)
+                current_balance = get_balance(base_asset)
+                sell_quantity = adjust_quantity(current_balance, symbol_info)
+                
+                if current_balance >= sell_quantity * 0.8:
+                    print(f"📈 RSI ALTO ({rsi:.2f})! Vendendo {sell_quantity} {base_asset}...")
+                    order = place_order("SELL", sell_quantity, SYMBOL)
                     
                     if order:
-                        profit = (current_price - entry_price) * adjusted_quantity
+                        profit = (current_price - entry_price) * sell_quantity
                         profit_total += profit
                         in_position = False
                         print(f"✅ VENDA REALIZADA! Lucro: ${profit:.6f}")
                         print(f"💰 Lucro Total: ${profit_total:.6f}")
                 else:
-                    print(f"⚠️ Saldo insuficiente para vender: {asset_balance} < {adjusted_quantity}")
+                    print(f"⚠️ Saldo insuficiente para vender: {current_balance} < {sell_quantity}")
             
             time.sleep(LOOP_SLEEP_SEC)
             
